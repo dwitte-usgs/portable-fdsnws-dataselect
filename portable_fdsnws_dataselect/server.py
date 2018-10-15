@@ -151,6 +151,7 @@ def verify_configuration(params, level=0):
     # Definition of time series index schema version 1.0
     index_version10 = {'network': 'text', 'station': 'text', 'location': 'text',
                        'channel': 'text', 'quality': 'text',
+                       'version': 'integer',
                        'starttime': 'text', 'endtime': 'text',
                        'samplerate': 'real', 'filename': 'text',
                        'byteoffset': 'integer', 'bytes': 'integer',
@@ -302,11 +303,10 @@ def main():
     params = dict()
 
     # Database file, required
-    if config.has_option('index_db', 'path'):
-        params['dbfile'] = config.get('index_db', 'path')
-
+    if config.has_option('sqlite_db', 'path'):
+        params['dbfile'] = config.get('sqlite_db', 'path')
     else:
-        msg = "Required database file (index_db:path) is not specified"
+        msg = "Required database file (sqlite_db:path) is not specified"
         logger.critical(msg)
         print(msg)
         sys.exit(1)
