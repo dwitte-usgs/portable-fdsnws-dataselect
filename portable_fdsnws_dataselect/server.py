@@ -4,6 +4,7 @@ from future.builtins import *  # NOQA
 
 import threading
 import sqlite3
+import sqlalchemy
 import logging.config
 import argparse
 import os
@@ -192,6 +193,31 @@ def verify_configuration(params, level=0):
 
     return
 
+def connect(config):
+    '''
+    Returns a connection and a metadata object for the database
+    '''
+    if config.has_option('postgresql_db','host_address'):
+        # We connect with the help of the PostgreSQL URL
+        # postgresql://federer:grandestslam@localhost:5432/tennis
+        url = 'postgresql://{}:{}@{}:{}/{}'
+        user = config.get('postgresql_db','username')
+        password = config.get('postgresql_db','password')
+        host = config.get('postgresql_db','host_address')
+        port = config.get('postgresql_db','port')
+        db = config.get('postgresql_db','dbname')
+        url = url.format(user, password, host, port, db)
+        # The return value of create_engine() is our connection object
+        conn = sqlalchemy.create_engine(url, client_encoding='utf8')
+    elif config.has_option('sqlite_db','path'):
+        url = 'sqlite:///{}'
+        path = config.get('sqlite_db','path')
+        url = url.format(path)
+        # The return value of create_engine() is our connection object
+        conn = sqlalchemy.create_engine(url)
+    # We then bind the connection to MetaData()
+    meta = sqlalchemy.MetaData(bind=conn, reflect=True)
+    return conn, meta
 
 def main():
     '''
