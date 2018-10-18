@@ -14,8 +14,10 @@ import time
 import re
 import datetime
 import sqlite3
+import sqlalchemy
 import uuid
 import socket
+import portable_fdsnws_dataselect
 
 from logging import getLogger, DEBUG
 from http.server import BaseHTTPRequestHandler
@@ -26,6 +28,7 @@ from obspy.core.stream import Stream
 from portable_fdsnws_dataselect import pkg_path, version
 from portable_fdsnws_dataselect.request import DataselectRequest, QueryError, NonQueryURLError
 from portable_fdsnws_dataselect.miniseed import NoDataError, RequestLimitExceededError
+from sqlalchemy.engine.url import URL
 
 logger = getLogger(__name__)
 
@@ -298,34 +301,35 @@ Service: fdsnws-dataselect  version %d.%d.%d
         my_uuid = uuid.uuid4().hex
         request_table = "request_%s" % my_uuid
 
-        logger.debug("Opening SQLite database for index rows: %s" % self.server.params['dbfile'])
+        logger.debug("Opening SQLite database for index rows: %s" % self.server.params['dboptions'])
 
         try:
-            conn = sqlite3.connect(self.server.params['dbfile'], 10.0)
+            conn, meta = connect(self.server.params['dboptions'])
         except Exception as err:
             raise ValueError(str(err))
 
-        cur = conn.cursor()
-
         # Store temporary table(s) in memory
         try:
-            cur.execute("PRAGMA temp_store=MEMORY")
+            if self.server.params['dboptions']['section'] == 'sqlite_db':
+                conn.execute("PRAGMA temp_store=MEMORY")
         except Exception as err:
             raise ValueError(str(err))
 
         # Create temporary table and load request
         try:
-            cur.execute("CREATE TEMPORARY TABLE {0} "
+            conn.execute("CREATE TEMPORARY TABLE {0} "
                         "(network TEXT, station TEXT, location TEXT, channel TEXT, "
                         "starttime TEXT, endtime TEXT) ".format(request_table))
+            meta = sqlalchemy.MetaData(bind=conn, reflect=True)
 
             for req in query_rows:
                 # Replace "--" location ID request alias with true empty value
                 if req[2] == "--":
                     req[2] = ""
+                net, sta, loc, chan, startt, endt = req
 
-                cur.execute("INSERT INTO {0} (network,station,location,channel,starttime,endtime) "
-                            "VALUES (?,?,?,?,?,?) ".format(request_table), req)
+                conn.execute("INSERT INTO {} (network,station,location,channel,starttime,endtime) "
+                            "VALUES ('{}','{}','{}','{}','{}','{}') ".format(request_table,net,sta,loc,chan,startt,endt))
 
         except Exception as err:
             import traceback
@@ -337,8 +341,7 @@ Service: fdsnws-dataselect  version %d.%d.%d
             summary_table = self.server.params['summary_table']
         else:
             summary_table = "{0}_summary".format(self.server.params['index_table'])
-        cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' and name='{0}'".format(summary_table))
-        summary_present = cur.fetchone()[0]
+        summary_present = conn.scalar(sqlalchemy.select([sqlalchemy.func.count('*')]).select_from(meta.tables['tsindex_summary']))
 
         wildcards = False
         for req in query_rows:
@@ -352,12 +355,12 @@ Service: fdsnws-dataselect  version %d.%d.%d
             # a) resolve wildcards, allows use of '=' operator and table index
             # b) reduce index table search to channels that are known included
             if summary_present:
-                self.resolve_request(cur, summary_table, request_table)
+                self.resolve_request(conn, summary_table, request_table)
                 wildcards = False
             # Replace wildcarded starttime and endtime with extreme date-times
             else:
-                cur.execute("UPDATE {0} SET starttime='0000-00-00T00:00:00' WHERE starttime='*'".format(request_table))
-                cur.execute("UPDATE {0} SET endtime='5000-00-00T00:00:00' WHERE endtime='*'".format(request_table))
+                conn.execute("UPDATE {0} SET starttime='0000-00-00T00:00:00' WHERE starttime='*'".format(request_table))
+                conn.execute("UPDATE {0} SET endtime='5000-00-00T00:00:00' WHERE endtime='*'".format(request_table))
 
         # Fetch final results by joining resolved and index table
         try:
@@ -383,7 +386,7 @@ Service: fdsnws-dataselect  version %d.%d.%d
             if 'quality' in bulk_params and bulk_params['quality'] in ('D', 'R', 'Q'):
                 sql = sql + " AND quality = '{0}' ".format(bulk_params['quality'])
 
-            cur.execute(sql)
+            rows = conn.execute(sql)
 
         except Exception as err:
             import traceback
@@ -400,7 +403,7 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         index_rows = []
         while True:
-            row = cur.fetchone()
+            row = rows.fetchone()
             if row is None:
                 break
             index_rows.append(NamedRow(*row))
@@ -410,7 +413,7 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         logger.debug("Fetched %d index rows" % len(index_rows))
 
-        cur.execute("DROP TABLE {0}".format(request_table))
+        conn.execute("DROP TABLE {0}".format(request_table))
         conn.close()
 
         return index_rows
@@ -482,10 +485,10 @@ Service: fdsnws-dataselect  version %d.%d.%d
         my_uuid = uuid.uuid4().hex
         request_table = "request_%s" % my_uuid
 
-        logger.debug("Opening SQLite database for summary rows: %s" % self.server.params['dbfile'])
+        logger.debug("Opening SQLite database for summary rows: %s" % self.server.params['dboptions'])
 
         try:
-            conn = sqlite3.connect(self.server.params['dbfile'], 10.0)
+            conn, meta = connect(self.server.params['dboptions'])
         except Exception as err:
             raise ValueError(str(err))
 
@@ -618,3 +621,33 @@ Service: fdsnws-dataselect  version %d.%d.%d
         else:
             self.send_error(404, "No permission to list directory")
             return None
+
+def connect(dboptions):
+    '''
+    Returns a connection and a metadata object for the database
+    '''
+    if dboptions['section'] == 'postgresql_db':
+        # We connect with the help of the PostgreSQL URL
+        # postgresql://federer:grandestslam@localhost:5432/tennis
+        url = 'postgresql://{}:{}@{}:{}/{}'
+        dbinfo = {'drivername': 'postgres',
+                  'username': dboptions['username'],
+                  'password': dboptions['password'],
+                  'database': dboptions['dbname'],
+                  'host': dboptions['host_address'],
+                  'port': dboptions['port']}
+        # The return value of create_engine() is our connection object
+        engine = sqlalchemy.create_engine(URL(**dbinfo))
+    elif dboptions['section'] == 'sqlite_db':
+        url = 'sqlite:///{}'
+        path = dboptions['path']
+        if not os.path.isfile(path):
+            raise Exception("Cannot find database file '%s'" % dboptions['path'])
+        url = url.format(path)
+        # The return value of create_engine() is our connection object
+        engine = sqlalchemy.create_engine(url)
+    # We then bind the connection to MetaData()
+    conn = engine.connect()
+    meta = sqlalchemy.MetaData()
+    meta.reflect(bind=conn)
+    return conn, meta

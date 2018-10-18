@@ -3,7 +3,7 @@ from __future__ import (absolute_import, division, print_function,
 from future.builtins import *  # NOQA
 
 import threading
-import sqlite3
+# import sqlite3
 import sqlalchemy
 import logging.config
 import argparse
@@ -20,8 +20,9 @@ from platform import python_version
 from configparser import ConfigParser
 from shutil import copyfile
 from portable_fdsnws_dataselect import pkg_path, version
-from portable_fdsnws_dataselect.handler import HTTPServer_RequestHandler
+from portable_fdsnws_dataselect.handler import HTTPServer_RequestHandler, connect
 from portable_fdsnws_dataselect.miniseed import MiniseedDataExtractor
+from sqlalchemy.exc import CompileError
 
 logger = getLogger(__name__)
 
@@ -126,31 +127,23 @@ def verify_configuration(params, level=0):
     Open the database, check for index table, check for summary table.
     '''
 
-    # Database file exists
-    if not os.path.isfile(params['dbfile']):
-        raise ConfigError("Cannot find database file '%s'" % params['dbfile'])
-
-    # Database can be opened
+    # Try opening database
     try:
-        conn = sqlite3.connect(params['dbfile'], 10.0)
+        conn, meta = connect(params['dboptions'])
     except Exception as err:
         raise ConfigError("Cannot open database: " + str(err))
 
-    cur = conn.cursor()
-
     # Specified index table exists
-    cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' and name='%s'" % params['index_table'])
-    if not cur.fetchone()[0]:
+    if params['index_table'] not in meta.tables:
         raise ConfigError("Cannot find index table '%s' in database" % params['index_table'])
 
     # Fetch index table definition and construct a dictionary for comparison
-    cur.execute("PRAGMA table_info('%s')" % params['index_table'])
     index_schema = dict()
-    for row in cur.fetchall():
-        index_schema[row[1].lower()] = row[2].lower()
+    for column in meta.tables[params['index_table']].c:
+        index_schema[column.name.lower()] = str(column.type).lower()
 
-    # Definition of time series index schema version 1.0
-    index_version10 = {'network': 'text', 'station': 'text', 'location': 'text',
+    # Definition of time series index schema version 1.1
+    index_version11 = {'network': 'text', 'station': 'text', 'location': 'text',
                        'channel': 'text', 'quality': 'text',
                        'version': 'integer',
                        'starttime': 'text', 'endtime': 'text',
@@ -161,63 +154,64 @@ def verify_configuration(params, level=0):
                        'format': 'text', 'filemodtime': 'text',
                        'updated': 'text', 'scanned': 'text'}
 
-    # Index table schema is version 1.0
-    if index_schema != index_version10:
+    # Index table schema is version 1.1
+    if index_schema != index_version11:
         raise ConfigError("Schema for index table %s is not recognized" % params['index_table'])
 
     if 'summary_table' in params:
         # The summary table exists
-        cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' and name='%s'" % params['summary_table'])
-        if not cur.fetchone()[0]:
+        if params['summary_table'] not in meta.tables:
             raise ConfigError("Cannot find summary table '%s' in database" % params['summary_table'])
 
         # Fetch summary table definition and construct a dictionary for comparison
-        cur.execute("PRAGMA table_info('%s')" % params['summary_table'])
         summary_schema = dict()
-        for row in cur.fetchall():
-            summary_schema[row[1].lower()] = row[2].lower() if row[2] != '' else 'text'
+        for column in meta.tables[params['summary_table']].c:
+            try:
+                summary_schema[column.name.lower()] = str(column.type).lower()
+            except CompileError:
+                summary_schema[column.name.lower()] = 'text'
 
-        # Definition of summary schema version 1.0
-        summary_version10 = {'network': 'text', 'station': 'text',
+        # Definition of summary schema version 1.1
+        summary_version11 = {'network': 'text', 'station': 'text',
                              'location': 'text', 'channel': 'text',
                              'earliest': 'text', 'latest': 'text',
                              'updt': 'text'}
 
-        # Summary table schema is version 1.0
-        if summary_schema != summary_version10:
+        # Summary table schema is version 1.1
+        if summary_schema != summary_version11:
             raise ConfigError("Schema for summary table %s is not recognized" % params['index_table'])
     else:
-        logger.warning("No summary table configured.  Such a table is strongly recommended.")
-
-    conn.close()
+        logger.warning("No summary table configured. Such a table is strongly recommended.")
 
     return
 
-def connect(config):
-    '''
-    Returns a connection and a metadata object for the database
-    '''
-    if config.has_option('postgresql_db','host_address'):
-        # We connect with the help of the PostgreSQL URL
-        # postgresql://federer:grandestslam@localhost:5432/tennis
-        url = 'postgresql://{}:{}@{}:{}/{}'
-        user = config.get('postgresql_db','username')
-        password = config.get('postgresql_db','password')
-        host = config.get('postgresql_db','host_address')
-        port = config.get('postgresql_db','port')
-        db = config.get('postgresql_db','dbname')
-        url = url.format(user, password, host, port, db)
-        # The return value of create_engine() is our connection object
-        conn = sqlalchemy.create_engine(url, client_encoding='utf8')
-    elif config.has_option('sqlite_db','path'):
-        url = 'sqlite:///{}'
-        path = config.get('sqlite_db','path')
-        url = url.format(path)
-        # The return value of create_engine() is our connection object
-        conn = sqlalchemy.create_engine(url)
-    # We then bind the connection to MetaData()
-    meta = sqlalchemy.MetaData(bind=conn, reflect=True)
-    return conn, meta
+# def connect(dboptions):
+#     '''
+#     Returns a connection and a metadata object for the database
+#     '''
+#     if dboptions['section'] == 'postgresql_db':
+#         # We connect with the help of the PostgreSQL URL
+#         # postgresql://federer:grandestslam@localhost:5432/tennis
+#         url = 'postgresql://{}:{}@{}:{}/{}'
+#         user = dboptions['username']
+#         password = dboptions['password']
+#         host = dboptions['host_address']
+#         port = dboptions['port']
+#         db = dboptions['dbname']
+#         url = url.format(user, password, host, port, db)
+#         # The return value of create_engine() is our connection object
+#         conn = sqlalchemy.create_engine(url, client_encoding='utf8')
+#     elif dboptions['section'] == 'sqlite_db':
+#         url = 'sqlite:///{}'
+#         path = dboptions['path']
+#         if not os.path.isfile(path):
+#             raise Exception("Cannot find database file '%s'" % dboptions['path'])
+#         url = url.format(path)
+#         # The return value of create_engine() is our connection object
+#         conn = sqlalchemy.create_engine(url)
+#     # We then bind the connection to MetaData()
+#     meta = sqlalchemy.MetaData(bind=conn, reflect=True)
+#     return conn, meta
 
 def main():
     '''
@@ -329,13 +323,28 @@ def main():
     params = dict()
 
     # Database file, required
-    if config.has_option('sqlite_db', 'path'):
-        params['dbfile'] = config.get('sqlite_db', 'path')
+    if config.options('sqlite_db'):
+        section = 'sqlite_db'
+    elif config.options('postgresql_db'):
+        section = 'postgresql_db'
     else:
-        msg = "Required database file (sqlite_db:path) is not specified"
+        msg = "Required database (sqlite_db or postgresql_db) is not specified"
         logger.critical(msg)
         print(msg)
         sys.exit(1)
+    db_options = {}
+    db_options['section'] = section
+    options = config.options(section)
+    for option in options:
+        db_options[option] = config.get(section,option)
+    params['dboptions'] = db_options
+    # if config.has_option('sqlite_db', 'path'):
+    #     params['dbfile'] = config.get('sqlite_db', 'path')
+    # else:
+    #     msg = "Required database file (sqlite_db:path) is not specified"
+    #     logger.critical(msg)
+    #     print(msg)
+    #     sys.exit(1)
 
     # Index table
     if config.has_option('index_db', 'table'):
