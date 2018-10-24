@@ -142,9 +142,9 @@ def verify_configuration(params, level=0):
     for column in meta.tables[params['index_table']].c:
         index_schema[column.name.lower()] = str(column.type).lower()
 
-    # Definition of time series index schema version 1.1
-    index_version11 = {'network': 'text', 'station': 'text', 'location': 'text',
-                       'channel': 'text', 'quality': 'text',
+    # Definition of time series index schema version 1.1 for SQLite
+    index_version11 = {'sqlite_db': {'network': 'text', 'station': 'text',
+                       'location': 'text', 'channel': 'text', 'quality': 'text',
                        'version': 'integer',
                        'starttime': 'text', 'endtime': 'text',
                        'samplerate': 'real', 'filename': 'text',
@@ -152,10 +152,24 @@ def verify_configuration(params, level=0):
                        'hash': 'text', 'timeindex': 'text',
                        'timespans': 'text', 'timerates': 'text',
                        'format': 'text', 'filemodtime': 'text',
-                       'updated': 'text', 'scanned': 'text'}
-
+                       'updated': 'text', 'scanned': 'text'},
+                       'postgresql_db': {'id':'bigint', 'network': 'text',
+                       'station': 'text', 'location': 'text',
+                       'channel': 'text', 'quality': 'text',
+                       'version': 'smallint',
+                       'starttime': 'timestamp with time zone',
+                       'endtime': 'timestamp with time zone',
+                       'samplerate': 'numeric', 'filename': 'text',
+                       'byteoffset': 'bigint', 'bytes': 'bigint',
+                       'hash': 'text', 'timeindex': 'hstore',
+                       'timespans': 'numrange[]', 'timerates': 'text',
+                       'format': 'text',
+                       'filemodtime': 'timestamp with time zone',
+                       'updated': 'timestamp with time zone',
+                       'scanned': 'timestamp with time zone'}
+                       }
     # Index table schema is version 1.1
-    if index_schema != index_version11:
+    if index_schema != index_version11[params['dboptions']['section']]:
         raise ConfigError("Schema for index table %s is not recognized" % params['index_table'])
 
     if 'summary_table' in params:
@@ -172,13 +186,20 @@ def verify_configuration(params, level=0):
                 summary_schema[column.name.lower()] = 'text'
 
         # Definition of summary schema version 1.1
-        summary_version11 = {'network': 'text', 'station': 'text',
+        summary_version11 = {'sqlite_db': {'network': 'text', 'station': 'text',
                              'location': 'text', 'channel': 'text',
                              'earliest': 'text', 'latest': 'text',
-                             'updt': 'text'}
+                             'updt': 'text'},
+                             'postgresql_db': {'network': 'text',
+                             'station': 'text', 'location': 'text',
+                             'channel': 'text',
+                             'earliest': 'timestamp with time zone',
+                             'latest': 'timestamp with time zone',
+                             'updt': 'timestamp with time zone'}
+                             }
 
         # Summary table schema is version 1.1
-        if summary_schema != summary_version11:
+        if summary_schema != summary_version11[params['dboptions']['section']]:
             raise ConfigError("Schema for summary table %s is not recognized" % params['index_table'])
     else:
         logger.warning("No summary table configured. Such a table is strongly recommended.")

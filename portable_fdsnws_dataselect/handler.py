@@ -29,6 +29,8 @@ from portable_fdsnws_dataselect import pkg_path, version
 from portable_fdsnws_dataselect.request import DataselectRequest, QueryError, NonQueryURLError
 from portable_fdsnws_dataselect.miniseed import NoDataError, RequestLimitExceededError
 from sqlalchemy.engine.url import URL
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, DateTime, Integer, String
 
 logger = getLogger(__name__)
 
@@ -328,6 +330,8 @@ Service: fdsnws-dataselect  version %d.%d.%d
                     req[2] = ""
                 net, sta, loc, chan, startt, endt = req
 
+                print(("INSERT INTO {} (network,station,location,channel,starttime,endtime) "
+                            "VALUES ('{}','{}','{}','{}','{}','{}') ".format(request_table,net,sta,loc,chan,startt,endt)))
                 conn.execute("INSERT INTO {} (network,station,location,channel,starttime,endtime) "
                             "VALUES ('{}','{}','{}','{}','{}','{}') ".format(request_table,net,sta,loc,chan,startt,endt))
 
@@ -364,7 +368,9 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         # Fetch final results by joining resolved and index table
         try:
-            sql = ("SELECT DISTINCT ts.network,ts.station,ts.location,ts.channel,ts.quality, "
+            r = conn.execute("SELECT * FROM {0}".format(request_table)).fetchone()
+
+            sql = {'sqlite_db': "SELECT DISTINCT ts.network,ts.station,ts.location,ts.channel,ts.quality, "
                    "ts.starttime,ts.endtime,ts.samplerate, "
                    "ts.filename,ts.byteoffset,ts.bytes,ts.hash, "
                    "ts.timeindex,ts.timespans,ts.timerates, "
@@ -380,13 +386,31 @@ Service: fdsnws-dataselect  version %d.%d.%d
                    "  AND ts.endtime >= r.starttime "
                    .format(self.server.params['index_table'],
                            request_table, "GLOB" if wildcards else "=",
-                           self.server.params['maxsectiondays']))
+                           self.server.params['maxsectiondays']),
+                   'postgresql_db': "SELECT DISTINCT ts.network,ts.station,ts.location,ts.channel,ts.quality, "
+                          "ts.starttime,ts.endtime,ts.samplerate, "
+                          "ts.filename,ts.byteoffset,ts.bytes,ts.hash, "
+                          "ts.timeindex,ts.timespans,ts.timerates, "
+                          "ts.format,ts.filemodtime,ts.updated,ts.scanned, r.starttime, r.endtime "
+                          "FROM {0} ts, {1} r "
+                          "WHERE "
+                          "  ts.network {2} r.network "
+                          "  AND ts.station {2} r.station "
+                          "  AND ts.location {2} r.location "
+                          "  AND ts.channel {2} r.channel "
+                          "  AND ts.starttime::text <= r.endtime "
+                          "  AND ts.starttime::text >= '{3}' "
+                          "  AND ts.endtime::text >= r.starttime "
+                          .format(self.server.params['index_table'],
+                                  request_table, "GLOB" if wildcards else "=",
+                                  datetime.datetime.strptime(r.starttime, '%Y-%m-%dT%H:%M:%S.%f') - datetime.timedelta(self.server.params['maxsectiondays']))
+                  }
 
             # Add quality identifer criteria
             if 'quality' in bulk_params and bulk_params['quality'] in ('D', 'R', 'Q'):
-                sql = sql + " AND quality = '{0}' ".format(bulk_params['quality'])
+                sql[self.server.params['dboptions']['section']] = sql[self.server.params['dboptions']['section']] + " AND quality = '{0}' ".format(bulk_params['quality'])
 
-            rows = conn.execute(sql)
+            rows = conn.execute(sql[self.server.params['dboptions']['section']])
 
         except Exception as err:
             import traceback
@@ -406,7 +430,13 @@ Service: fdsnws-dataselect  version %d.%d.%d
             row = rows.fetchone()
             if row is None:
                 break
-            index_rows.append(NamedRow(*row))
+            myrow = NamedRow(*row)
+            # PostgreSQL uses an hstore instead of text, convert to text
+            if self.server.params['dboptions']['section'] == 'postgresql_db':
+                print('AA',','.join(sorted(list(map('=>'.join, myrow.timeindex.items())))))
+                myrow = myrow._replace(timeindex=','.join(sorted(list(map('=>'.join, myrow.timeindex.items())))))
+            index_rows.append(myrow)
+            print('VV',myrow.timeindex.split(','))
 
         # Sort results in application (ORDER BY in SQL triggers bad index usage)
         index_rows.sort()
