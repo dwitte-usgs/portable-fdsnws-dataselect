@@ -20,12 +20,11 @@ from platform import python_version
 from configparser import ConfigParser
 from shutil import copyfile
 from portable_fdsnws_dataselect import pkg_path, version
-from portable_fdsnws_dataselect.handler import HTTPServer_RequestHandler, connect
+from portable_fdsnws_dataselect.handler import HTTPServer_RequestHandler, db_connect
 from portable_fdsnws_dataselect.miniseed import MiniseedDataExtractor
 from sqlalchemy.exc import CompileError
 
 logger = getLogger(__name__)
-
 
 class ThreadPoolMixIn(ThreadingMixIn):
     '''
@@ -129,7 +128,8 @@ def verify_configuration(params, level=0):
 
     # Try opening database
     try:
-        conn, meta = connect(params['dboptions'])
+        engine, meta = db_connect(params['dboptions'])
+        conn = engine.connect()
     except Exception as err:
         raise ConfigError("Cannot open database: " + str(err))
 
@@ -506,15 +506,15 @@ def main():
             print("Initializing summary table %s" % params['summary_table'])
 
             try:
-                conn = sqlite3.connect(params['dbfile'], 10.0)
+                engine, meta = sqlite3.db_connect(params['dbfile'], 10.0)
+                conn = engine.connect()
             except Exception as err:
                 logger.error("Could not connect to DB for initialization: %s" % str(err))
                 return
 
             try:
-                c = conn.cursor()
-                c.execute("DROP TABLE IF EXISTS %s;" % params['summary_table'])
-                c.execute("CREATE TABLE {0} AS"
+                conn.execute("DROP TABLE IF EXISTS %s;" % params['summary_table'])
+                conn.execute("CREATE TABLE {0} AS"
                           "  SELECT network,station,location,channel,"
                           "  min(starttime) AS earliest, max(endtime) AS latest, datetime('now') as updt"
                           "  FROM {1}"

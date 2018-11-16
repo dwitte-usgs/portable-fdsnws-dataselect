@@ -4,3 +4,4 @@ portable_fdsnws_dataselect.egg-info/
 portable_fdsnws_dataselect/__init__.pyc
 portable_fdsnws_dataselect/__pycache__/
 server.ini
+dataselect.log.*
