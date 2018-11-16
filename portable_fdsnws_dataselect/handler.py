@@ -13,7 +13,7 @@ import os.path
 import time
 import re
 import datetime
-import sqlite3
+# import sqlite3
 import sqlalchemy
 import uuid
 import socket
@@ -26,7 +26,6 @@ from collections import namedtuple
 from obspy.core.utcdatetime import UTCDateTime
 from obspy.core.stream import Stream
 from portable_fdsnws_dataselect import pkg_path, version
-from portable_fdsnws_dataselect import models
 from portable_fdsnws_dataselect.request import DataselectRequest, QueryError, NonQueryURLError
 from portable_fdsnws_dataselect.miniseed import NoDataError, RequestLimitExceededError
 from sqlalchemy import case, func, insert, or_, update
@@ -34,7 +33,7 @@ from sqlalchemy import BigInteger, Column, DateTime, Float, Integer, Numeric, Sm
 from sqlalchemy.engine.url import URL
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import HSTORE, INT4RANGE
-from sqlalchemy.orm import mapper, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql.operators import op
 
 logger = getLogger(__name__)
@@ -308,7 +307,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
         '''
         my_uuid = uuid.uuid4().hex
         request_table = "request_%s" % my_uuid
-        print('Req Tab:', request_table)
 
         logger.debug("Opening SQLite database for index rows: %s" % self.server.params['dboptions'])
 
@@ -329,9 +327,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         # Create temporary table and load request
         try:
-            # conn.execute("CREATE TEMPORARY TABLE {0} "
-            #             "(network TEXT, station TEXT, location TEXT, channel TEXT, "
-            #             "starttime TEXT, endtime TEXT) ".format(request_table))
             temp_req_table = Table(request_table, meta,
                 Column('network', String, primary_key=True),
                 Column('station', String, primary_key=True),
@@ -357,10 +352,7 @@ Service: fdsnws-dataselect  version %d.%d.%d
                 if req[2] == "--":
                     req[2] = ""
                 net, sta, loc, chan, startt, endt = req
-                print('Axxing for %s to %s' % (startt, endt))
 
-                # conn.execute("INSERT INTO {} (network,station,location,channel,starttime,endtime) "
-                #             "VALUES ('{}','{}','{}','{}','{}','{}') ".format(request_table,net,sta,loc,chan,startt,endt))
                 session.add(
                     Request(
                         network=net,station=sta,location=loc,
@@ -368,7 +360,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
                     )
                 )
                 session.commit()
-
 
         except Exception as err:
             import traceback
@@ -380,6 +371,7 @@ Service: fdsnws-dataselect  version %d.%d.%d
             summary_table = self.server.params['summary_table']
         else:
             summary_table = "{0}_summary".format(self.server.params['index_table'])
+        print(summary_table)
         summary_present = session.query(meta.tables['tsindex_summary']).count()
 
         wildcards = False
@@ -432,8 +424,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
                 self.resolve_request(engine, summary_table, request_table)
                 wildcards = False
             else:
-                # conn.execute("UPDATE {0} SET starttime='0000-00-00T00:00:00' WHERE starttime='*'".format(request_table))
-                # conn.execute("UPDATE {0} SET endtime='5000-00-00T00:00:00' WHERE endtime='*'".format(request_table))
                 if session.query(rt).filter(rt.c.starttime=='*').count():
                     session.execute(update(
                         rt, values={
@@ -454,49 +444,8 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         # Fetch final results by joining resolved and index table
         try:
-            # r = conn.execute("SELECT * FROM {0}".format(request_table))
             rt = Table(request_table, meta, autoload=True, autoload_with=engine)
             it = Table(self.server.params['index_table'], meta, autoload=True, autoload_with=engine)
-            # for each in r:
-            #     print('BB',each)
-            for each in session.query(rt).all():
-                print('BC',each)
-
-            # sql = {'sqlite_db': "SELECT DISTINCT ts.network,ts.station,ts.location,ts.channel,ts.quality, "
-            #        "ts.starttime,ts.endtime,ts.samplerate, "
-            #        "ts.filename,ts.byteoffset,ts.bytes,ts.hash, "
-            #        "ts.timeindex,ts.timespans,ts.timerates, "
-            #        "ts.format,ts.filemodtime,ts.updated,ts.scanned, r.starttime, r.endtime "
-            #        "FROM {0} ts, {1} r "
-            #        "WHERE "
-            #        "  ts.network {2} r.network "
-            #        "  AND ts.station {2} r.station "
-            #        "  AND ts.location {2} r.location "
-            #        "  AND ts.channel {2} r.channel "
-            #        "  AND ts.starttime <= r.endtime "
-            #        "  AND ts.starttime >= datetime(r.starttime,'-{3} days') "
-            #        "  AND ts.endtime >= r.starttime "
-            #        .format(self.server.params['index_table'],
-            #                request_table, "GLOB" if wildcards else "=",
-            #                self.server.params['maxsectiondays']),
-            #        'postgresql_db': "SELECT DISTINCT ts.network,ts.station,ts.location,ts.channel,ts.quality, "
-            #               "ts.starttime,ts.endtime,ts.samplerate, "
-            #               "ts.filename,ts.byteoffset,ts.bytes,ts.hash, "
-            #               "ts.timeindex,ts.timespans,ts.timerates, "
-            #               "ts.format,ts.filemodtime,ts.updated,ts.scanned, r.starttime, r.endtime "
-            #               "FROM {0} ts, {1} r "
-            #               "WHERE "
-            #               "  ts.network {2} r.network "
-            #               "  AND ts.station {2} r.station "
-            #               "  AND ts.location {2} r.location "
-            #               "  AND ts.channel {2} r.channel "
-            #               "  AND ts.starttime::text <= r.endtime "
-            #               "  AND ts.starttime::text >= '{3}' "
-            #               "  AND ts.endtime::text >= r.starttime "
-            #               .format(self.server.params['index_table'],
-            #                       request_table, "GLOB" if wildcards else "=",
-            #                       datetime.datetime.strptime(each.starttime, '%Y-%m-%dT%H:%M:%S.%f') - datetime.timedelta(self.server.params['maxsectiondays']))
-            #       }
             results = session.query(
                 it.c.network, it.c.station,
                 it.c.location, it.c.channel,
@@ -513,29 +462,13 @@ Service: fdsnws-dataselect  version %d.%d.%d
                 it.c.location.ilike(rt.c.location),
                 it.c.channel.ilike(rt.c.channel),
                 it.c.starttime <= func.cast(rt.c.endtime, sqlalchemy.DateTime),
-                it.c.starttime >= func.cast(rt.c.starttime, sqlalchemy.DateTime) - datetime.timedelta(10),
+                it.c.starttime >= func.cast(rt.c.starttime, sqlalchemy.DateTime) - datetime.timedelta(self.server.params['maxsectiondays']),
                 it.c.endtime >= func.cast(rt.c.starttime, sqlalchemy.DateTime)
             )
-            print('NN', results.count())
             # Add quality identifer criteria
             if 'quality' in bulk_params and bulk_params['quality'] in ('D', 'R', 'Q'):
-                # sql[self.server.params['dboptions']['section']] = sql[self.server.params['dboptions']['section']] + " AND quality = '{0}' ".format(bulk_params['quality'])
                 results = results.filter(it.c.quality==bulk_params['quality'])
 
-            # rows = conn.execute(sql[self.server.params['dboptions']['section']])
-            # rows = results.all()
-
-
-            # s = conn.execute('SELECT * FROM %s' % (request_table))
-            # for e in s:
-            #     print('LL', e)
-            # # meta = sqlalchemy.MetaData(bind=conn, reflect=True)
-            # # for table in meta.tables:
-            # #     print('UU', table)
-            # # print('UX', request_table)
-            # rs = Table(request_table, meta, autoload=True, autoload_with=engine)
-            # for row in session.query(rs).all():
-            #     print(row.network, row.station, row.location, row.channel, row.starttime, row.endtime)
         except Exception as err:
             import traceback
             traceback.print_exc()
@@ -552,25 +485,18 @@ Service: fdsnws-dataselect  version %d.%d.%d
         index_rows = []
         for row in results.all():
             myrow = NamedRow(*row)
-            print('Asking for %s to %s' % (myrow.starttime, myrow.endtime))
             # PostgreSQL uses an hstore instead of text, convert to text
             if self.server.params['dboptions']['section'] == 'postgresql_db':
-                # print('AA',','.join(sorted(list(map('=>'.join, myrow.timeindex.items())))))
                 myrow = myrow._replace(timeindex=','.join(sorted(list(map('=>'.join, myrow.timeindex.items())))))
             index_rows.append(myrow)
-            # print('VV',myrow.timeindex.split(','))
 
         # Sort results in application (ORDER BY in SQL triggers bad index usage)
         index_rows.sort()
 
         logger.debug("Fetched %d index rows" % len(index_rows))
 
-        # conn.execute("DROP TABLE {0}".format(request_table))
-        conn.close()
         session.close()
-        # temp_req_table.drop(engine)
-        # conn.close()
-
+        temp_req_table.drop(engine)
 
         return index_rows
 
@@ -593,7 +519,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
             meta.reflect(bind=engine)
             Session = sessionmaker(bind=engine)
             session = Session()
-            # conn.execute("ALTER TABLE {0} RENAME TO {1}".format(request_table, request_table_orig))
             temp_req_table_orig = Table(request_table_orig, meta,
                 Column('network', String, primary_key=True),
                 Column('station', String, primary_key=True),
@@ -608,52 +533,11 @@ Service: fdsnws-dataselect  version %d.%d.%d
             rt_orig = Table(request_table_orig, meta, autoload=True, autoload_with=engine)
             for row in session.query(rt).all():
                 session.execute(insert(rt_orig, values=row._asdict()))
-            # conn.execute(rt_orig.insert().values(session.query(rt).all()))
         except Exception as err:
             raise ValueError(str(err))
 
         # Create resolved request table by joining with summary
         try:
-            # sql = ("CREATE TEMPORARY TABLE {0} "
-            #        "(network TEXT, station TEXT, location TEXT, channel TEXT, "
-            #        "starttime TEXT, endtime TEXT) ".format(request_table))
-            # conn.execute(sql)
-            print('SDSD')
-            # temp_req_table = Table(request_table, meta,
-            #     Column('network', String, primary_key=True),
-            #     Column('station', String),
-            #     Column('location', String),
-            #     Column('channel', String),
-            #     Column('starttime', String),
-            #     Column('endtime', String),
-            #     extend_existing=True
-            # )
-            # temp_req_table.create(engine)
-            # class Request(Base):
-            #     __tablename__ = request_table
-            #     network = Column(String, primary_key=True)
-            #     station = Column(String)
-            #     location = Column(String)
-            #     channel = Column(String)
-            #     starttime = Column(String)
-            #     endtime = Column(String)
-            #     extend_existing = True
-
-
-
-            # sql = ("INSERT INTO {0} (network,station,location,channel,starttime,endtime) "
-            #        "SELECT s.network,s.station,s.location,s.channel,"
-            #        "CASE WHEN r.starttime='*' THEN s.earliest::text ELSE r.starttime END,"
-            #        "CASE WHEN r.endtime='*' THEN s.latest::text ELSE r.endtime END "
-            #        "FROM {1} s, {2} r "
-            #        "WHERE "
-            #        "  (r.starttime='*' OR r.starttime <= s.latest::text) "
-            #        "  AND (r.endtime='*' OR r.endtime >= s.earliest::text) "
-            #        "  AND (r.network='*' OR s.network GLOB r.network) "
-            #        "  AND (r.station='*' OR s.station GLOB r.station) "
-            #        "  AND (r.location='*' OR s.location GLOB r.location) "
-            #        "  AND (r.channel='*' OR s.channel GLOB r.channel) ".
-            #        format(request_table, summary_table, request_table_orig))
             it = Table(self.server.params['index_table'], meta, autoload=True, autoload_with=engine)
             rt = Table(request_table_orig, meta, autoload=True, autoload_with=engine)
             st = Table(summary_table, meta, autoload=True, autoload_with=engine)
@@ -676,29 +560,16 @@ Service: fdsnws-dataselect  version %d.%d.%d
                 or_(rt.c.location=='*', st.c.location.ilike(rt.c.location)),
                 or_(rt.c.channel=='*', st.c.channel.ilike(rt.c.channel)),
             )
-            # if self.server.params['dboptions']['section'] == 'postgresql_db':
-            #     sql = sql.replace('GLOB','SIMILAR TO')
-            # conn.execute(sql)
-            # for each in conn.execute('SELECT * FROM {}'.format(request_table)):
-            #     print('AAA',each)
-            # for each in conn.execute('SELECT * FROM {}'.format(request_table_orig)):
-            #     print('CCC',each)
 
         except Exception as err:
             raise ValueError(str(err))
 
-        # counter = 0
-        # for each in conn.execute("SELECT * FROM {}".format(request_table)):
-        #     counter += 1
-        # resolvedrows = counter
         resolvedrows = session.query(rt).count()
 
         logger.debug("Resolved request with summary into %d rows" % resolvedrows)
 
-        # conn.execute("DROP TABLE {0}".format(request_table_orig))
         session.close()
         temp_req_table_orig.drop(engine)
-        print('returnt')
         return resolvedrows
 
     def fetch_summary_rows(self, query_rows):
@@ -728,8 +599,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
         except Exception as err:
             raise ValueError(str(err))
 
-        # cur = conn.cursor()
-
         # Store temporary table(s) in memory
         try:
             if self.server.params['dboptions']['section'] == 'sqlite_db':
@@ -739,9 +608,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         # Create temporary table and load request
         try:
-            # cur.execute("CREATE TEMPORARY TABLE {0} "
-            #             "(network TEXT, station TEXT, location TEXT, channel TEXT)".
-            #             format(request_table))
             temp_req_table = Table(request_table, meta,
                 Column('network', String, primary_key=True),
                 Column('station', String, primary_key=True),
@@ -768,8 +634,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
                     req[2] = ""
                 net, sta, loc, chan, startt, endt = req
 
-                # conn.execute("INSERT INTO {} (network,station,location,channel,starttime,endtime) "
-                #             "VALUES ('{}','{}','{}','{}','{}','{}') ".format(request_table,net,sta,loc,chan,startt,endt))
                 session.add(
                     Request(
                         network=net,station=sta,location=loc,
@@ -788,23 +652,11 @@ Service: fdsnws-dataselect  version %d.%d.%d
             summary_table = self.server.params['summary_table']
         else:
             summary_table = "{0}_summary".format(self.server.params['index_table'])
-        # cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' and name='{0}'".format(summary_table))
-        # summary_present = cur.fetchone()[0]
         session.query(meta.tables['tsindex_summary']).count()
 
         if summary_present:
             # Select summary rows by joining with summary table
             try:
-                # sql = ("SELECT DISTINCT s.network,s.station,s.location,s.channel,"
-                #        "s.earliest,s.latest,s.updt "
-                #        "FROM {0} s, {1} r "
-                #        "WHERE "
-                #        "  (r.network='*' OR s.network GLOB r.network) "
-                #        "  AND (r.station='*' OR s.station GLOB r.station) "
-                #        "  AND (r.location='*' OR s.location GLOB r.location) "
-                #        "  AND (r.channel='*' OR s.channel GLOB r.channel) ".
-                #        format(summary_table, request_table))
-                # cur.execute(sql)
                 results = session.query(
                     st.c.network, st.c.station, st.c.location, st.c.channel, st.c.earliest, st.c.latest, st.c.updt
                 ).filter(
@@ -831,8 +683,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
             logger.debug("Fetched %d summary rows" % len(summary_rows))
 
-            # cur.execute("DROP TABLE {0}".format(request_table))
-            # conn.close()
             session.close()
             temp_req_table.drop(engine)
 
@@ -900,7 +750,6 @@ def db_connect(dboptions):
     '''
     if dboptions['section'] == 'postgresql_db':
         # We connect with the help of the PostgreSQL URL
-        # postgresql://federer:grandestslam@localhost:5432/tennis
         url = 'postgresql://{}:{}@{}:{}/{}'
         dbinfo = {'drivername': 'postgres',
                   'username': dboptions['username'],

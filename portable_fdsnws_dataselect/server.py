@@ -206,34 +206,6 @@ def verify_configuration(params, level=0):
 
     return
 
-# def connect(dboptions):
-#     '''
-#     Returns a connection and a metadata object for the database
-#     '''
-#     if dboptions['section'] == 'postgresql_db':
-#         # We connect with the help of the PostgreSQL URL
-#         # postgresql://federer:grandestslam@localhost:5432/tennis
-#         url = 'postgresql://{}:{}@{}:{}/{}'
-#         user = dboptions['username']
-#         password = dboptions['password']
-#         host = dboptions['host_address']
-#         port = dboptions['port']
-#         db = dboptions['dbname']
-#         url = url.format(user, password, host, port, db)
-#         # The return value of create_engine() is our connection object
-#         conn = sqlalchemy.create_engine(url, client_encoding='utf8')
-#     elif dboptions['section'] == 'sqlite_db':
-#         url = 'sqlite:///{}'
-#         path = dboptions['path']
-#         if not os.path.isfile(path):
-#             raise Exception("Cannot find database file '%s'" % dboptions['path'])
-#         url = url.format(path)
-#         # The return value of create_engine() is our connection object
-#         conn = sqlalchemy.create_engine(url)
-#     # We then bind the connection to MetaData()
-#     meta = sqlalchemy.MetaData(bind=conn, reflect=True)
-#     return conn, meta
-
 def main():
     '''
     Read/validate options; read config file; set up logging
@@ -359,13 +331,6 @@ def main():
     for option in options:
         db_options[option] = config.get(section,option)
     params['dboptions'] = db_options
-    # if config.has_option('sqlite_db', 'path'):
-    #     params['dbfile'] = config.get('sqlite_db', 'path')
-    # else:
-    #     msg = "Required database file (sqlite_db:path) is not specified"
-    #     logger.critical(msg)
-    #     print(msg)
-    #     sys.exit(1)
 
     # Index table
     if config.has_option('index_db', 'table'):
