@@ -371,7 +371,6 @@ Service: fdsnws-dataselect  version %d.%d.%d
             summary_table = self.server.params['summary_table']
         else:
             summary_table = "{0}_summary".format(self.server.params['index_table'])
-        print(summary_table)
         summary_present = session.query(meta.tables['tsindex_summary']).count()
 
         wildcards = False
