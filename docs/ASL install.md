@@ -23,7 +23,8 @@ Creates service script in /data/www/portable-fdsnws-dataselect/venv/portable-fds
 
 ## Test locally
 * Run server starter file portable-fdsnws-dataselect passing in .ini file  
-```/data/www/portable-fdsnws-dataselect/venv/bin/portable-fdsnws-dataselect /data/www/portable-fdsnws-dataselect/server.ini```
+```/data/www/portable-fdsnws-dataselect/venv/bin/portable-fdsnws-dataselect /data/www/portable-fdsnws-dataselect/server.ini```  
+This URL should give you a help page (note Port=8080): ```http://vmdevwb:8080/fdsnws/dataselect/1```
 
 ## Make a daemon
 
