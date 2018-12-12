@@ -290,212 +290,126 @@ Service: fdsnws-dataselect  version %d.%d.%d
 
         return
 
-    def fetch_index_rows(self, query_rows, bulk_params):
-        '''
-        Fetch index rows matching specified request
-
-        `query_rows`: List of tuples containing (net,sta,loc,chan,start,end)
-        `bulk_params`: Dict of bulk parameters (e.g. quality, minsegmentlength)
-
-        Request elements may contain '?' and '*' wildcards.  The start and
-        end elements can be a single '*' if not a date-time string.
-
-        Return rows as list of named tuples containing:
-        (network,station,location,channel,quality,starttime,endtime,samplerate,
-         filename,byteoffset,bytes,hash,timeindex,timespans,timerates,
-         format,filemodtime,updated,scanned,requeststart,requestend)
-        '''
-        my_uuid = uuid.uuid4().hex
-        request_table = "request_%s" % my_uuid
-
-        logger.debug("Opening SQLite database for index rows: %s" % self.server.params['dboptions'])
-
-        try:
-            engine, meta = db_connect(self.server.params['dboptions'])
-            conn = engine.connect()
-            Session = sessionmaker(bind=engine)
-            session = Session()
-        except Exception as err:
-            raise ValueError(str(err))
-
-        # Store temporary table(s) in memory
-        try:
-            if self.server.params['dboptions']['section'] == 'sqlite_db':
-                conn.execute("PRAGMA temp_store=MEMORY")
-        except Exception as err:
-            raise ValueError(str(err))
-
-        # Create temporary table and load request
-        try:
-            temp_req_table = Table(request_table, meta,
-                Column('network', String, primary_key=True),
-                Column('station', String, primary_key=True),
-                Column('location', String, primary_key=True),
-                Column('channel', String, primary_key=True),
-                Column('starttime', String, primary_key=True),
-                Column('endtime', String, primary_key=True),
-                extend_existing=True
-            )
-            temp_req_table.create(engine)
-            class Request(Base):
-                __tablename__ = request_table
-                __table_args__ = (
-                    PrimaryKeyConstraint('network','station','location','channel','starttime','endtime'),
-                    {
-                        'autoload': True,
-                        'autoload_with': engine,
-                    }
-                )
-
-            for req in query_rows:
-                # Replace "--" location ID request alias with true empty value
-                if req[2] == "--":
-                    req[2] = ""
-                net, sta, loc, chan, startt, endt = req
-
-                session.add(
-                    Request(
-                        network=net,station=sta,location=loc,
-                        channel=chan,starttime=startt,endtime=endt
-                    )
-                )
-                session.commit()
-
-        except Exception as err:
-            import traceback
-            traceback.print_exc()
-            raise ValueError(str(err))
-
-        # Determine if summary table exists, default to index_summary
-        if 'summary_table' in self.server.params:
-            summary_table = self.server.params['summary_table']
+    def process_where(self, query_data, bulk_params=None):
+        """
+        Create WHERE portion of SQL Query from passed parameters
+        Parameters
+        ----------
+        query_data
+            Main query values, network, station, starttime, etc.
+            NamedQuery from fetch_index_rows function
+        bulk_params
+            Bulk query paramweters, only quality used at this point
+            dict
+        Returns
+        -------
+        where
+            WHERE clauses for SQL query
+            str
+        """
+        tests = []
+        # Process main fields, use either = if no wildcards or LIKE if wildcards, convert wildcards to SQL LIKE symbols
+        for field in ['network', 'station', 'location', 'channel']:
+            value = getattr(query_data, field)
+            if value != '*':
+                if '?' in value or '*' in value:
+                    tests.append("{0} LIKE '{1}'".format(field, value.replace('?', '_').replace('*', '%%')))
+                else:
+                    tests.append("{0} = '{1}'".format(field, value))
+        # Start and End times required, can be wildcard *
+        starttime = getattr(query_data, 'starttime')
+        endtime = getattr(query_data, 'endtime')
+        # Always put a 10 day limit unless '*'
+        max_date = None
+        if starttime != '*':
+            max_date = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%S.%f') + datetime.timedelta(days=self.server.params['maxsectiondays'])
+        if self.server.params['dboptions']['section'] == 'postgresql_db':
+            if starttime != '*':
+                tests.append("endtime >= TO_TIMESTAMP('{0}', 'YYYY-MM-DDTHH:MI:SS.US')".format(starttime))
+            if endtime != '*':
+                tests.append("starttime <= TO_TIMESTAMP('{0}', 'YYYY-MM-DDTHH:MI:SS.US')".format(endtime))
+            if max_date:
+                tests.append("starttime <= '{0}'".format(max_date))
         else:
-            summary_table = "{0}_summary".format(self.server.params['index_table'])
-        summary_present = session.query(meta.tables['tsindex_summary']).count()
-
-        wildcards = False
-        for req in query_rows:
-            for field in req:
-                if '*' in field or '?' in field:
-                    wildcards = True
-                    break
-
-        if wildcards:
-            # Resolve wildcards using summary if present to:
-            # a) resolve wildcards, allows use of '=' operator and table index
-            # b) reduce index table search to channels that are known included
-            rt = Table(request_table, meta, autoload=True, autoload_with=engine)
-            if session.query(rt).filter(or_(rt.c.network.contains('*'), rt.c.network.contains('?'))).count():
-                session.execute(update(
-                    rt, values={
-                        rt.c.network : session.query(rt).filter(
-                            rt.c.network.contains('*')
-                        ).first().network.replace('*','%').replace('?','%')
-                    }
-                ))
-            if session.query(rt).filter(or_(rt.c.station.contains('*'), rt.c.station.contains('?'))).count():
-                session.execute(update(
-                    rt, values={
-                        rt.c.station : session.query(rt).filter(
-                            rt.c.station.contains('*')
-                        ).first().station.replace('*','%').replace('?','%')
-                    }
-                ))
-            if session.query(rt).filter(or_(rt.c.location.contains('*'), rt.c.location.contains('?'))).count():
-                session.execute(update(
-                    rt, values={
-                        rt.c.location : session.query(rt).filter(
-                            rt.c.location.contains('*')
-                        ).first().location.replace('*','%').replace('?','%')
-                    }
-                ))
-            if session.query(rt).filter(or_(rt.c.channel.contains('*'), rt.c.channel.contains('?'))).count():
-                session.execute(update(
-                    rt, values={
-                        rt.c.channel : session.query(rt).filter(
-                            rt.c.channel.contains('*')
-                        ).first().channel.replace('*','%').replace('?','%')
-                    }
-                ))
-            session.commit()
-
-            if summary_present:
-                self.resolve_request(engine, summary_table, request_table)
-                wildcards = False
-            else:
-                if session.query(rt).filter(rt.c.starttime=='*').count():
-                    session.execute(update(
-                        rt, values={
-                            rt.c.starttime : session.query(rt).filter(
-                                rt.c.starttime.contains('*')
-                            ).first().starttime.replace('*','0000-00-00T00:00:00')
-                        }
-                    ))
-                if session.query(rt).filter(rt.c.endtime=='*').count():
-                    session.execute(update(
-                        rt, values={
-                            rt.c.endtime : session.query(rt).filter(
-                                rt.c.endtime.contains('*')
-                            ).first().endtime.replace('*','5000-00-00T00:00:00')
-                        }
-                    ))
-                session.commit()
-
-        # Fetch final results by joining resolved and index table
-        try:
-            rt = Table(request_table, meta, autoload=True, autoload_with=engine)
-            it = Table(self.server.params['index_table'], meta, autoload=True, autoload_with=engine)
-            results = session.query(
-                it.c.network, it.c.station,
-                it.c.location, it.c.channel,
-                it.c.quality, it.c.starttime,
-                it.c.endtime, it.c.samplerate,
-                it.c.filename, it.c.byteoffset, it.c.bytes,
-                it.c.hash, it.c.timeindex, it.c.timespans,
-                it.c.timerates, it.c.format, it.c.filemodtime,
-                it.c.updated, it.c.scanned,
-                rt.c.starttime, rt.c.endtime
-            ).distinct().filter(
-                it.c.network.ilike(rt.c.network),
-                it.c.station.ilike(rt.c.station),
-                it.c.location.ilike(rt.c.location),
-                it.c.channel.ilike(rt.c.channel),
-                it.c.starttime <= func.cast(rt.c.endtime, sqlalchemy.DateTime),
-                it.c.starttime >= func.cast(rt.c.starttime, sqlalchemy.DateTime) - datetime.timedelta(self.server.params['maxsectiondays']),
-                it.c.endtime >= func.cast(rt.c.starttime, sqlalchemy.DateTime)
-            )
-            # Add quality identifer criteria
+            if starttime != '*':
+                tests.append("endtime >= '{0}'".format(starttime))
+            if endtime != '*':
+                tests.append("starttime <= '{0}'".format(endtime))
+            if max_date:
+                tests.append("starttime <= '{0}'".format(max_date))
+        # Process bulk parameters
+        if bulk_params:
             if 'quality' in bulk_params and bulk_params['quality'] in ('D', 'R', 'Q'):
-                results = results.filter(it.c.quality==bulk_params['quality'])
+                tests.append("quality = '{0}'".format(bulk_params['quality']))
+        where = ' WHERE ' + ' AND '.join(tests)
+        return where
 
+    def fetch_index_rows(self, query_rows, bulk_params):
+        """
+        Query the DB and get the filenames
+        Parameters
+        ----------
+        query_rows
+            data to use in query (network, station, channel, etc.)
+            list of tuples
+        bulk_params
+            Bulk parameters to qualify data (e.g. quality)
+            dict
+        Returns
+        -------
+        list of NamedRow tuples containing mseed filename, etc.
+        """
+
+        # Named tuple for returned data from DB query
+        NamedRow = namedtuple('NamedRow', ['network', 'station', 'location', 'channel', 'quality',
+                                           'starttime', 'endtime', 'filename', 'bytes', 'samplerate',
+                                           'byteoffset', 'timeindex',
+                                           'requeststart', 'requestend'])
+
+        # Named tuple for query parameters
+        NamedQuery = namedtuple('NamedQuery', ['network', 'station', 'location', 'channel', 'starttime', 'endtime'])
+
+        logger.debug("Attempt to fetch {0} with bulk = {1}".format(query_rows, bulk_params))
+
+        # Connect to proper DB session
+        try:
+            engine, _ = db_connect(self.server.params['dboptions'])
+            connector = engine.connect()
+            session_class = sessionmaker(bind=engine)
+            session = session_class()
         except Exception as err:
-            import traceback
-            traceback.print_exc()
             raise ValueError(str(err))
 
-        # Map raw tuples to named tuples for clear referencing
-        NamedRow = namedtuple('NamedRow',
-                              ['network', 'station', 'location', 'channel', 'quality',
-                               'starttime', 'endtime', 'samplerate', 'filename',
-                               'byteoffset', 'bytes', 'hash', 'timeindex', 'timespans',
-                               'timerates', 'format', 'filemodtime', 'updated', 'scanned',
-                               'requeststart', 'requestend'])
-
+        # Loop through passed queries
         index_rows = []
-        for row in results.all():
-            myrow = NamedRow(*row)
-            # PostgreSQL uses an hstore instead of text, convert to text
-            if self.server.params['dboptions']['section'] == 'postgresql_db':
-                myrow = myrow._replace(timeindex=','.join(sorted(list(map('=>'.join, myrow.timeindex.items())))))
-            index_rows.append(myrow)
+        for query_row in query_rows:
+            query_data = NamedQuery(*query_row)
+            # Build WHERE section of SQL query
+            where = self.process_where(query_data=query_data, bulk_params=bulk_params)
+            # Build SQL query itself
+            query_sql = 'SELECT network, station, location, channel, quality, starttime, endtime, filename, bytes, samplerate, byteoffset, timeindex from {0}{1};'.format(self.server.params['index_table'], where)
+            # Query DB
+            results = connector.execute(query_sql)
+            # Loop through results and load NamedQuery list
+            for row in results:
+                row_data = list(row)
+                # Add in queried start and end times to feed mseed
+                # Note: mseed needs valid dates so replace wildcards with something
+                row_data.append(query_data.starttime if query_data.starttime != '*' else '0001-01-01T00:00:00.000000')
+                row_data.append(query_data.endtime if query_data.endtime != '*' else '5000-01-01T00:00:00.000000')
+                myrow = NamedRow(*row_data)
+                # PostgreSQL uses an hstore instead of text, convert to comma separated list
+                if self.server.params['dboptions']['section'] == 'postgresql_db':
+                    myrow = myrow._replace(timeindex=','.join(sorted(list(map('=>'.join, myrow.timeindex.items())))))
+                index_rows.append(myrow)
+            logger.debug("SQL query: {0} : {1}".format(self.server.params['dboptions']['section'], query_sql))
 
         # Sort results in application (ORDER BY in SQL triggers bad index usage)
         index_rows.sort()
 
-        logger.debug("Fetched %d index rows" % len(index_rows))
+        logger.debug("Fetched {0} index rows".format(len(index_rows)))
 
         session.close()
-        temp_req_table.drop(engine)
 
         return index_rows
 
